@@ -5,8 +5,8 @@ This will be an end-to-end data engineering pipeline that extracts macroeconomic
 The analysis covers roughly 2018 to the present, a period that includes several major economic and geopolitical regime shifts: the US-China trade war, the COVID-19 pandemic, the Federal Reserve's rate hiking cycle, the Russia-Ukraine war, the 2025 tariff escalation. Each of these events altered the relationship between Treasuries and gold in different ways, and the pipeline is designed to make those shifts visible and testable.
 
 ## Data Sources
-- **FRED API**
-  - The pipeline pulls four series from FRED:
+### **FRED API**
+The pipeline pulls four series from FRED:
     - DGS10: the 10-Year Treasury Constant Maturity Rate, which is the most widely watched benchmark for long-term US interest rates. This is the main "yield" variable in the analysis.
     - DGS2: the 2-Year Treasury Constant Maturity Rate. Including this alongside the 10-Year allows the dashboard to show the yield curve slope (the spread between the two), which is a well-known recession indicator.
     - DFEDTARU: the Federal Funds Upper Target Rate. This captures Federal Reserve policy decisions directly, as distinct from market-determined yields.
