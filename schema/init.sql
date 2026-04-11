@@ -1,0 +1,2 @@
+-- schema/init.sql
+-- Star schema DDL — creates all tables on container start
