@@ -1,0 +1,22 @@
+# Data processing
+pandas>=2.0.0
+
+# Database
+psycopg2-binary>=2.9.0       # PostgreSQL adapter for Python
+sqlalchemy>=2.0.0             # SQL toolkit used by load.py for upserts
+
+# API & HTTP
+requests>=2.31.0              # HTTP client for SEC EDGAR API calls
+edgartools>=5.0.0             # High-level SEC EDGAR client with XBRL parsing
+
+# Configuration
+pyyaml>=6.0                   # Parses companies.yaml
+
+# LLM normalisation (used only for bootstrap, not at runtime)
+anthropic>=0.30.0             # Claude API client for llm_normaliser.py
+
+# Environment variables
+python-dotenv>=1.0.0          # Loads .env file into os.environ
+
+# Orchestration (install separately if using Airflow)
+# apache-airflow>=2.7.0       # Uncommented when setting up Airflow
