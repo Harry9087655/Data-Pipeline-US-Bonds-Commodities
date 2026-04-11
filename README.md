@@ -1,41 +1,43 @@
 # SEC Financial Analytics Pipeline
 
-An end-to-end data engineering project that extracts structured financial data from SEC EDGAR filings, normalises inconsistent XBRL concept tags using an LLM-assisted mapping layer, stores the data in a PostgreSQL star schema, and surfaces key financial metrics across companies in a Power BI dashboard.
+An end-to-end data engineering project that extracts structured financial data from SEC EDGAR filings using `edgartools`, applies a thin normalisation adapter to map standardised financial concepts to a consistent database schema, stores the data in a PostgreSQL star schema, and surfaces key financial metrics across companies in a Power BI dashboard.
 
-Built as a portfolio project to demonstrate a full production-style pipeline — from raw regulatory filings to analyst-ready visualisations — across major US-listed technology companies.
+Built as a portfolio project to demonstrate a full production-style pipeline — from raw regulatory filings to analyst-ready visualisations — across major US-listed companies.
 
 ---
 
 ## Data Source
 
-**SEC EDGAR XBRL API** — `https://data.sec.gov/api/xbrl/companyfacts/{CIK}.json`
+**SEC EDGAR** via [`edgartools`](https://github.com/dgunning/edgartools) — a Python library that wraps the SEC EDGAR API and provides pre-standardised financial statements (income statement, balance sheet, cash flow) with ~95 canonical concepts mapped from ~18,000 raw XBRL tags.
 
-The US Securities and Exchange Commission requires all public companies to file annual reports (10-K) in XBRL format, making structured financial data freely available via their public API. Each company is identified by a Central Index Key (CIK).
+The US Securities and Exchange Commission requires all public companies to file annual reports (10-K) in XBRL format, making structured financial data freely available via their public API. Each company is identified by a Central Index Key (CIK). `edgartools` handles CIK lookup, rate limiting, and XBRL parsing internally.
 
 **Coverage**
 - Filing types: 10-K (annual)
 - History: 5 years (FY2019–FY2024)
 - Companies: Apple (AAPL), Microsoft (MSFT), Alphabet (GOOGL), Meta (META), Amazon (AMZN)
+- Expandable via `config/companies.yaml` — add any SEC-filing company by CIK/ticker
 
-**Key XBRL concept tags extracted**
+**Key financial concepts used** (standardised by `edgartools`)
 
-| Canonical concept      | Example XBRL tags pulled                                          |
-|------------------------|-------------------------------------------------------------------|
-| Revenue                | `Revenues`, `RevenueFromContractWithCustomer`                     |
-| Cost of goods sold     | `CostOfRevenue`, `CostOfGoodsSold`, `CostOfGoodsSoldAndServices`  |
-| Operating income       | `OperatingIncomeLoss`                                             |
-| Net income             | `NetIncomeLoss`                                                   |
-| Total assets           | `Assets`                                                          |
-| Total liabilities      | `Liabilities`                                                     |
-| Cash & equivalents     | `CashAndCashEquivalentsAtCarryingValue`                           |
-| Capex                  | `PaymentsToAcquirePropertyPlantAndEquipment`                      |
-| Depreciation & amort.  | `DepreciationDepletionAndAmortization`                            |
-| Operating cash flow    | `NetCashProvidedByUsedInOperatingActivities`                      |
-| Accounts receivable    | `AccountsReceivableNetCurrent`                                    |
-| Inventory              | `InventoryNet`                                                    |
-| Accounts payable       | `AccountsPayableCurrent`                                          |
+| Concept (standard_concept)  | Used for                             |
+|-----------------------------|--------------------------------------|
+| Revenue                     | Top-line income                      |
+| CostOfRevenue               | Cost of goods sold                   |
+| OperatingIncome             | Operating profit                     |
+| NetIncome                   | Bottom-line profit                   |
+| Assets                      | Total assets                         |
+| Liabilities                 | Total liabilities                    |
+| Equity                      | Total stockholders' equity           |
+| Cash                        | Cash & equivalents                   |
+| Capex                       | Capital expenditures                 |
+| DepreciationAndAmortization | D&A expense                          |
+| OperatingCashFlow           | Cash from operations                 |
+| AccountsReceivable          | Trade receivables                    |
+| Inventory                   | Inventory on hand                    |
+| AccountsPayable             | Trade payables                       |
 
-> **Note on XBRL inconsistency:** Different companies use different tag names for the same financial concept. The normalisation layer resolves these into a single canonical concept dictionary. The LLM is used only once to bootstrap mappings for previously unseen tags — all confirmed mappings are persisted in `concept_map.json` so that subsequent pipeline runs are fully deterministic and require no LLM calls.
+> **Note on XBRL inconsistency:** Different companies use different XBRL tag names for the same financial concept (e.g., `Revenues`, `RevenueFromContractWithCustomer`, `SalesRevenueNet` all mean revenue). `edgartools` resolves this automatically using data-driven mappings built from 32,000+ real SEC filings, with industry-aware overrides via the Fama-French 48 classification. Our pipeline's normalisation layer is a thin adapter that maps `edgartools`' `standard_concept` names to our database schema column names — it does not perform XBRL tag resolution itself.
 
 ---
 
@@ -52,15 +54,15 @@ sec-financial-pipeline/
 │   └── companies.yaml              # CIK numbers, tickers, company names
 │
 ├── extraction/
-│   ├── edgar_client.py             # SEC EDGAR API requests, rate limiting, incremental fetch
+│   ├── edgar_client.py             # Uses edgartools to fetch standardised financial statements
 │   ├── lineage.py                  # Records source file, filing date, extraction timestamp per record
 │   └── raw/                        # Raw API responses (gitignored)
 │       └── {CIK}_companyfacts.json
 │
 ├── normalisation/
-│   ├── llm_normaliser.py           # LLM bootstrap: suggests mappings for unseen tags only
-│   ├── concept_mapping.py          # Applies concept_map.json at runtime — no LLM dependency
-│   └── concept_map.json            # Persisted {xbrl_tag: canonical_concept} dictionary (source of truth)
+│   ├── concept_mapping.py          # Thin adapter: maps edgartools standard_concept → database schema names
+│   ├── llm_normaliser.py           # Fallback: LLM-assisted mapping for tags edgartools cannot resolve
+│   └── concept_map.json            # Persisted {standard_concept: db_column_name} dictionary
 │
 ├── transformation/
 │   ├── transform.py                # Pandas transformations: derived metrics, growth rates, return ratios
@@ -92,9 +94,9 @@ The pipeline runs in six sequential stages. Each Airflow task is idempotent — 
 ```
 ┌──────────────────┐     ┌───────────────────┐     ┌──────────────────────┐
 │  1. Extraction   │────▶│  2. Normalisation  │────▶│  3. Transformation   │
-│  edgar_client    │     │  concept_mapping   │     │  transform.py        │
-│  incremental     │     │  (LLM bootstrap    │     │  metrics + growth    │
-│  + lineage log   │     │   → persisted map) │     │  rates + ROE/ROA     │
+│  edgartools      │     │  concept_mapping   │     │  transform.py        │
+│  standardised    │     │  (thin adapter:    │     │  metrics + growth    │
+│  + lineage log   │     │   std → db schema) │     │  rates + ROE/ROA     │
 └──────────────────┘     └───────────────────┘     └──────────────────────┘
                                                               │
                                                               ▼
@@ -119,11 +121,11 @@ The pipeline runs in six sequential stages. Each Airflow task is idempotent — 
 
 ### Stage 1 — Extraction (`extraction/edgar_client.py`)
 
-Hits the SEC EDGAR XBRL API for each company CIK defined in `config/companies.yaml`. Implements incremental loading — only fetches filings newer than the most recently ingested period, avoiding redundant API calls on subsequent runs. Respects the SEC rate limit (10 requests/second). Saves raw JSON responses to `extraction/raw/` and records source file, filing date, and extraction timestamp to the `dim_lineage` table via `lineage.py` for full data lineage tracking.
+Uses `edgartools` to fetch standardised financial statements (income statement, balance sheet, cash flow) for each company defined in `config/companies.yaml`. `edgartools` handles CIK lookup, SEC rate limiting, XBRL parsing, and concept standardisation internally — mapping ~18,000 raw XBRL tags to ~95 canonical concepts using data-driven mappings built from 32,000+ real filings, with industry-aware overrides via the Fama-French 48 classification. Implements incremental loading — only fetches filings newer than the most recently ingested period. Saves raw responses to `extraction/raw/` and records source file, filing date, and extraction timestamp to the `dim_lineage` table via `lineage.py` for full data lineage tracking.
 
 ### Stage 2 — Normalisation (`normalisation/concept_mapping.py`)
 
-Applies `concept_map.json` — a persisted dictionary mapping every known XBRL tag to its canonical concept — to the raw data. This stage is fully deterministic at runtime: no LLM is called. The LLM (`normalisation/llm_normaliser.py`) is invoked only when a previously unseen tag is detected. Its suggested mapping is reviewed and manually confirmed before being written back to `concept_map.json`. Tags that cannot be confidently classified are flagged and excluded rather than silently mapped, keeping the normalisation layer auditable and reproducible.
+A thin adapter layer that maps `edgartools`' `standard_concept` column names to the pipeline's database schema column names using `concept_map.json`. This decouples the pipeline from `edgartools`' naming conventions — if the library changes its labels in a future version, only `concept_map.json` needs updating, not the database schema or Power BI dashboard. For any XBRL tags that `edgartools` cannot standardise (returned as null `standard_concept`), `llm_normaliser.py` can be invoked manually as a fallback. Its suggestions are human-reviewed before being persisted to `concept_map.json`, keeping the pipeline deterministic and auditable.
 
 ### Stage 3 — Transformation (`transformation/transform.py`)
 
@@ -230,11 +232,11 @@ airflow dags trigger sec_pipeline
 # Update the PostgreSQL connection string if needed
 ```
 
-**Handling new XBRL tags:** If the extraction stage encounters a tag not in `concept_map.json`, run the LLM normaliser manually, review its suggestions, and commit the updated map before re-triggering the pipeline:
+**Handling unmapped XBRL tags:** If `edgartools` returns rows with a null `standard_concept` (tags it could not resolve), the LLM fallback can suggest mappings. Review and confirm before committing:
 
 ```bash
 python normalisation/llm_normaliser.py --review
-# Confirm or reject each suggested mapping interactively
+# Suggests mappings for unresolved tags using Claude API
 # Updates concept_map.json on confirmation only
 ```
 
@@ -249,7 +251,7 @@ The current implementation is scoped to 5 companies and 5 years of annual filing
 | Data volume | pandas in-memory | Migrate to DuckDB or Polars for larger datasets; PySpark for 500+ companies |
 | Ingestion | Sequential API calls | Parallelise with `concurrent.futures` or Airflow dynamic task mapping |
 | Storage | Single Postgres instance | Partition `fact_financials` by `company_id` and `fiscal_year` |
-| Normalisation | Flat JSON map | Promote to a versioned database table with full audit trail |
+| Normalisation | Thin adapter + `edgartools` built-in | Promote to a versioned database table with full audit trail |
 | Orchestration | Single DAG | Decompose into modular DAGs per company group for parallel execution |
 
 
@@ -259,8 +261,8 @@ The current implementation is scoped to 5 companies and 5 years of annual filing
 
 | Layer | Tool |
 |-------|------|
-| Extraction | Python, `requests`, SEC EDGAR XBRL API |
-| Normalisation | LLM API (Claude) for bootstrap; `json` for runtime |
+| Extraction | Python, `edgartools`, SEC EDGAR XBRL API |
+| Normalisation | Thin adapter (`concept_map.json`); LLM fallback (Claude) for unresolved tags |
 | Transformation | `pandas` |
 | Validation | Python assertions, manual benchmark reconciliation |
 | Storage | PostgreSQL 15 (Docker) |
